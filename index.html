@@ -306,10 +306,13 @@
     }
 
     function resetAll() {
+      if (running) {
+        stop(); // Stop the audio and animation loop if running
+      }
       resetTimer();
       updateBar(1);
       soundMeterEl.style.width = '0%';
-      statusEl.textContent = running ? 'Listening for sound...' : 'Tap Start to begin';
+      statusEl.textContent = 'Tap Start to begin'; // Always reset to 'Tap Start to begin'
     }
 
     function updateBar(progress) {
@@ -359,4 +362,91 @@
       }
 
       const elapsed = now - lastResetAt;
-      const re
+      const remaining = DRAIN_MS - elapsed;
+      const progress = Math.max(0, Math.min(1, remaining / DRAIN_MS));
+
+      updateBar(progress);
+
+      if (remaining <= 0) {
+        showHappy();
+        stop(); // Stop audio processing when done
+      } else {
+        animationFrameId = requestAnimationFrame(tick);
+      }
+    }
+
+    async function start() {
+      if (running) {
+        // If already running, stop and restart to apply new settings or just re-initialize
+        await stop();
+      }
+
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 2048; // Can be 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
+        analyser.minDecibels = -90;
+        analyser.maxDecibels = -10;
+        analyser.smoothingTimeConstant = 0.85;
+
+        sourceNode = audioContext.createMediaStreamSource(mediaStream);
+        sourceNode.connect(analyser);
+        // analyser.connect(audioContext.destination); // Don't connect analyser to destination to avoid feedback
+
+        running = true;
+        resetAll(); // Reset timer and UI
+        statusEl.textContent = 'Listening for sound...';
+        animationFrameId = requestAnimationFrame(tick);
+        await ensureWakeLock();
+      } catch (err) {
+        console.error('Error accessing microphone:', err);
+        statusEl.textContent = 'Microphone access denied or error: ' + err.message;
+        running = false;
+        // Clean up if something went wrong
+        if (mediaStream) {
+            mediaStream.getTracks().forEach(track => track.stop());
+        }
+        if (audioContext && audioContext.state !== 'closed') {
+            audioContext.close();
+        }
+      }
+    }
+
+    async function stop() {
+      running = false;
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = 0;
+      }
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(track => track.stop());
+        mediaStream = null;
+      }
+      if (sourceNode) {
+          sourceNode.disconnect();
+          sourceNode = null;
+      }
+      if (analyser) {
+          analyser.disconnect();
+          analyser = null;
+      }
+      if (audioContext && audioContext.state !== 'closed') {
+        await audioContext.close();
+        audioContext = null;
+      }
+      if (wakeLock) {
+        await wakeLock.release();
+        wakeLock = null;
+      }
+      statusEl.textContent = 'Stopped';
+      resetAll(); // Reset UI state after stopping
+    }
+
+    // Event Listeners
+    startBtn.addEventListener('click', start);
+    resetBtn.addEventListener('click', resetAll);
+
+    // Ensure wake lock is re-requested if the page becomes visible
+    document.addEventListener('visibilitychange', ensureWakeLock);
+    document.addEventListener('fullscreenchange', ensureWakeLock);
